@@ -1,0 +1,47 @@
+# CentOS 7 + Docker 18.09 兼容（与 prism 相同）：旧版 seccomp profile 不含 clone3
+# 系统调用，新版 Python/glibc 线程创建会失败。宿主机升级 Docker 20.10+ 后可删除。
+x-kernel-opts: &kernel-opts
+  security_opt:
+    - seccomp:unconfined
+  pids_limit: 0
+  ulimits:
+    nproc: 65535
+
+services:
+  # ----------------------------------------------------------------
+  # proxy-hub — 代理池服务。代码挂载热重载，改代码自动生效
+  # 主备部署：在两台机器各跑一次本 compose（同一份代码、同一个 Redis），
+  # Redis 分布式锁保证全局只有一个副本抽 IP / 巡检，主宕机备机自动补位
+  # 启动：docker compose up -d --build
+  # ----------------------------------------------------------------
+  proxy-hub:
+    <<: *kernel-opts
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: proxy-hub:latest
+    container_name: proxy-hub
+    restart: unless-stopped
+    ports:
+      - "8100:8100"    # REST API（pull 取 IP / admin）
+      - "8101:8101"    # 隧道数据口（自建转发代理，消费方配这个地址）
+    env_file:
+      - .env                          # 必须先 cp .env.example .env（兼容老版 docker-compose v1）
+    volumes:
+      - .:/app                         # 代码实时挂载，改代码自动热重载
+      - pip_cache:/root/.cache/pip     # pip 缓存加速重装
+    command: ["uvicorn", "proxy_hub.main:app", "--host", "0.0.0.0", "--port", "8100",
+              "--reload", "--reload-dir", "proxy_hub"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8100/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pip_cache:
