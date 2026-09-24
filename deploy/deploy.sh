@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # 部署脚本（按变更类型选择更新策略）
+#
+# 用途：
+#   proxy-hub 的通用部署入口：同步环境变量文件 → 按 action 执行 compose 操作
+#   → 校验容器状态与 /healthz 健康检查。在任意目录下执行均可，
+#   效果与在项目根目录手工执行 docker compose 完全一致。
+#
 # 用法：
 #   deploy.sh <环境> [restart|config|build|stop|down]
 #
@@ -10,8 +16,22 @@
 #   down    停止并销毁容器（维护时使用）。
 #
 #   兼容旧习惯：code / start / up 会被视为 restart。
-# 环境对应文件：test -> .env.test，prod -> .env.prod，其余环境取 .env.<环境>（需存在）
-# 在任意目录下执行均可，效果与在项目根目录手工执行 docker compose 完全一致
+#
+# 环境对应文件：test -> .env.test，prod -> .env.prod，其余环境取 .env.<环境>（需存在；
+# 脚本会把它同步为项目根的 .env，供 compose env_file 读取）
+#
+# 前置条件：
+#   - docker 命令可用，当前用户有权访问 Docker 守护进程（否则脚本前置检查直接报错）
+#   - 兼容 docker compose v2 与 docker-compose v1（脚本自动探测）
+#   - 健康检查依赖 curl（缺失时跳过检查，仅告警）
+#
+# 环境变量（脚本内固定设置，无需外部传入）：
+#   COMPOSE_PROJECT_NAME=proxy-hub   固定 project 名，避免从 tag 目录部署时容器/网络名带前缀
+#   COMPOSE_HTTP_TIMEOUT=300         兼容慢速守护进程
+#
+# 副作用：
+#   - 同步 .env.<环境> → .env（compose env_file 读取）
+#   - 部署日志落盘 deploy/logs/deploy-<环境>-<action>-<时间戳>.log
 set -euo pipefail
 
 ENV="${1:-}"

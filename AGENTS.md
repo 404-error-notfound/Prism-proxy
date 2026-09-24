@@ -6,24 +6,11 @@ proxy-hub：通用代理池服务（Python 3.11+ / FastAPI）。本文面向 AI 
 
 从供应商 API（首发 qg.net）提取代理 IP。IP 过期时刻以供应商返回的每 IP `deadline` 为准，换套餐无需改代码；当前生产用 2min 套餐。健康探测后按**项目隔离**维护池：admin 注册项目发独立 token，每项目一个池、独立成本统计。Redis ZSET + 分布式锁实现**多副本主备**：同一时刻全局只有持锁副本抽 IP / 巡检，主宕机锁过期后备机自动补位。
 
-**两种池类型**（项目级，`POST /admin/projects` 的 `pool_type`，默认 `shared`）：
-- `shared`：qg.net 短效共享池（现有行为，多用户共用 IP）。
-- `exclusive`：青果独享代理（地区锁）——IP 单用户独占、有租期（小时/天级），被风控时调供应商"更换IP"换新。需配置 `PROXY_HUB_EXCLUSIVE_API_URL`/`EXCLUSIVE_AUTH_KEY`/`EXCLUSIVE_AUTH_PWD` 三件套才装配独享 provider；未配置时独享项目补位跳过（记 warn，不 crash）。独享池与共享池同用滚动补位骨架（自然过期清理/提前补位/下发禁区不变），差异：旁路城市级自动换段（地区锁在提取时指定）、风控标记后走 `_exclusive_replace` 换新（节流 `exclusive_replace_cooldown_s`）、独享 IP 建联前每 IP QPS 门控（`exclusive_per_ip_qps`）。
+**两种池类型**（项目级，`POST /admin/projects` 的 `pool_type`，默认 `shared`）：`shared` = qg.net 短效共享池（多用户共用 IP）；`exclusive` = 青果独享代理（地区锁，IP 单用户独占、有租期）。独享池按 target 路由、**消费方零改动**：消费方照常拿共享项目 token 连隧道，target 命中热配置 `exclusive_targets` 时优先从独享池选 IP，拿不出自动落回共享池。
 
-**独享池按 target 路由，消费方零改动**：独享项目由 admin 注册，**它的 token 不给任何消费方**——纯作池的维护载体（refresh/monitor tick 照常补位/清过期）。消费方照常拿共享项目 token 连隧道；target（CONNECT authority / pull 的 `?target=`）命中热配置 `exclusive_targets`（默认 `["baidu", "quark"]`，空列表=关闭；双向子串匹配）时 `pick_proxy_routed` 优先从独享池选 IP，独享池拿不出 IP 自动落回共享池（共享兜底，无需消费方重试）。独享项目没有自己的 /activity 来源，路由命中时由 pool 代记活跃（60s 节流），否则按需驱动会把独享池当空闲项目停补归零。
+池是**滚动补位**模型：ZSET 存 `pool:{project}`（member=代理 URL，score=deadline_epoch），巡检每轮清自然过期 → 连续 N 轮判死剔除 → **缺几个补几个**，池保持固定长度；低水位快补、分批防抖、提前补位等节奏细节见 [README「代理 IP 生命周期」](README.md#代理-ip-生命周期)。
 
-池是**滚动补位**模型：ZSET 存 `pool:{project}`（member=代理 URL，score=该 IP 的 deadline_epoch），巡检每轮清自然过期 → 连续 N 轮判死剔除 → **缺几个补几个**，池保持固定长度（目标大小 = 档位 fetch_num 或项目 pool_size 覆盖）。IP 用满整个供应商生命周期，不做整批提前热切。批量补位（缺口≥3）分批抽取错峰（`topup_stagger_*` 热配置），且按"再过 alloc_min_ttl_s 仍可下发"**提前补位**（投影口径 = 剩余寿命 ≥ 2×alloc_min_ttl_s）——防同批 IP 同 deadline 齐到期形成过期波。体检**流式入池**（谁先探完谁先可下发）；低水位（可下发数 ≤ 目标一半，含空池/全禁区）冷却缩到 `low_pool_cooldown_s`（默认 3s）且 refresh_tick 压到 1s 一轮快补，无水持续 30s 打 ERROR。
-
-两种消费模式：
-- **隧道（push，推荐）**：proxy-hub **自建 HTTP 转发代理**（`forwarder.py`，默认 8101 端口，无 gost）。消费方代理指向 `http://<项目名>:<项目token>@<本机>:8101`；每连接按目标站防重轮换挑上游 IP，上游失败换 IP 重试 ≤3 次（connect/握手各 2s）。
-- **Pull**：`GET /proxy`（Bearer 项目 token）取一个可用代理 URL，可选 `?target=` 参与防重；池空 503。
-
-核心特性：
-- **冷热分档**：peak/normal/offpeak 时段表调节奏降本；低谷 QPS 突增自动升 peak。
-- **按需驱动 / 唤热**：空闲超 `idle_threshold_s` 停止补位巡检，池自然归零。消费方 `/activity` 或隧道建连重新唤醒；prism 侧 `ensure_warm()` 会主动检查 `/status` 并在 cold 时调 `/refresh`。
-- **两阶段刷新**：`POST /refresh` 先补新 IP 再淘汰旧批次，刷新期间池子不空；锁被占时按 body `wait_s` 等待持锁方落地（等锁成功且池已可下发则直接复用不重复抽），补位撞供应商冷却且旧池不可下发时等短冷却后再试一次。
-- **防抖判死**：连续 N 轮（默认 2）探测失败才剔除。
-- **热配置**：`PUT /admin/config` 运行期生效（≤15s），带审计快照与回滚。
+**两种消费模式**：隧道（push，推荐，自建 HTTP 转发代理 `forwarder.py`，默认 8101 端口）与 Pull（`GET /proxy`，Bearer 项目 token，池空 503）。核心特性还有冷热分档、按需驱动/唤热、两阶段刷新、防抖判死、运行期热配置（`PUT /admin/config`，≤15s 生效，带审计快照与回滚）——逐项说明见 [README](README.md)。
 
 ## 技术栈与构建
 
@@ -95,6 +82,7 @@ tests/               conftest.py 提供 FakeRedis/FakePipeline 内存 stub（str
 - Docker 约定（与 prism 相同）：代码 bind mount `.:/app` + uvicorn `--reload` 热重载；镜像走 daocloud/阿里云国内加速；**不要加 `# syntax=docker/dockerfile:1` 指令**（BuildKit 拉前端镜像在国内会失败）。
 - 兼容 CentOS 7 + Docker 18.09：compose 里 `seccomp:unconfined` 等 `x-kernel-opts` 是旧内核绕 clone3 用的，宿主升级 Docker 20.10+ 前勿删。
 - 端口：8100（REST API）、8101（隧道数据口，消费方配这个）。
+- 部署脚本在 `deploy/`（`deploy.sh` / `deploy-prod.sh` / `clean.sh` / `jenkins.sh`），各脚本头部有用法、前置条件与环境变量注释。
 
 ## 与 prism 集成要点
 

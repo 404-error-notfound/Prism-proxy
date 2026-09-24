@@ -2,10 +2,19 @@
 set -e
 
 # Jenkins 部署脚本
-# 参数由 Jenkins 构建参数传入：
-# 本脚本统一调用 deploy/deploy.sh <环境>（按 APP_ENV 选择 .env.<环境>）
+#
+# 用途：
+#   Jenkins 构建入口：按分支确定目标服务器与环境 → rsync 推送代码
+#   → 远程执行 deploy/deploy.sh <环境> restart（按 APP_ENV 选择 .env.<环境>）。
+#
+# 参数（由 Jenkins 构建参数/环境注入，非命令行传参）：
 #   branchs    Git 分支，当前支持 origin/test
 #   WORKSPACE  Jenkins 自动注入的工作区路径
+#
+# 前置条件：
+#   - Jenkins agent 上有 rsync、ssh
+#   - Jenkins agent 到目标机 ${WEB_USER}@${IP} 已配免密 ssh（22 端口）
+#   - 目标机 ${WEB_PATH} 下已有 .env.<环境>（rsync 显式排除 .env，不覆盖服务器配置）
 
 PROJECT=proxy-hub
 SOURCE_CODE=${WORKSPACE}

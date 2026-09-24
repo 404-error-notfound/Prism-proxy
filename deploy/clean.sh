@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
 # 清空本项目全部容器（环境重置用）
+#
+# 用途：
+#   停止并删除 proxy-hub project 下的全部 compose 容器，
+#   以及历史 tag... 项目残留。镜像、数据卷（pip_cache）不动。
+#
 # 用法：
-#   clean.sh    停止并删除 proxy-hub project 下的全部 compose 容器，
-#               以及历史 tag... 项目残留。镜像、数据卷（pip_cache）不动。
+#   clean.sh
+#
+# 前置条件：
+#   - docker 命令可用，当前用户有权访问 Docker 守护进程
+#   - 兼容 docker compose v2 与 docker-compose v1（脚本自动探测）
+#
+# 环境变量（脚本内固定设置，无需外部传入）：
+#   COMPOSE_PROJECT_NAME=proxy-hub   只清理本 project 的容器与网络
+#   COMPOSE_HTTP_TIMEOUT=300         兼容慢速守护进程
+#
 # 注意：执行后服务全部中断，需重新 deploy 才能恢复。
 set -euo pipefail
 
