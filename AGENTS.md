@@ -4,7 +4,7 @@ proxy-hub：通用代理池服务（Python 3.11+ / FastAPI）。本文面向 AI 
 
 ## 项目概述
 
-从供应商 API（首发 qg.net）提取代理 IP。IP 过期时刻以供应商返回的每 IP `deadline` 为准，换套餐无需改代码；当前生产用 2min 套餐。健康探测后按**项目隔离**维护池：admin 注册项目发独立 token，每项目一个池、独立成本统计。Redis ZSET + 分布式锁实现**多副本主备**：同一时刻全局只有持锁副本抽 IP / 巡检，主宕机锁过期后备机自动补位。
+从供应商 API（当前为 qg.net）提取代理 IP。IP 过期时刻以供应商返回的每 IP `deadline` 为准，换套餐无需改代码；当前生产用 2min 套餐。健康探测后按**项目隔离**维护池：admin 注册项目发独立 token，每项目一个池、独立成本统计。Redis ZSET + 分布式锁实现**多副本主备**：同一时刻全局只有持锁副本抽 IP / 巡检，主宕机锁过期后备机自动补位。
 
 **两种池类型**（项目级，`POST /admin/projects` 的 `pool_type`，默认 `shared`）：`shared` = qg.net 短效共享池（多用户共用 IP）；`exclusive` = 青果独享代理（地区锁，IP 单用户独占、有租期）。独享池按 target 路由、**消费方零改动**：消费方照常拿共享项目 token 连隧道，target 命中热配置 `exclusive_targets` 时优先从独享池选 IP，拿不出自动落回共享池。
 
@@ -98,7 +98,7 @@ prism 作为消费方需三类配置：`PROXY_SERVICE_URL`（控制面，可逗�
 
 - **多副本是否需要选主？** 不需要。全局只有持 Redis 锁的副本抽 IP/巡检，主宕机锁过期（TTL 60s）后备机自动补位。
 - **换供应商套餐要改代码吗？** 不需要。IP 有效期以供应商返回的 `deadline_epoch` 为准，换套餐只需更新 `PROVIDER_API_URL`。
-- **为什么 offpeak 巡检间隔从 120s 改成 30s？** 2min 套餐配 120s 等于 IP 终生不再复检，死 IP 会残留池中。
+- **offpeak 巡检间隔为什么不能太长（如 120s）？** 2min 套餐配 120s 巡检等于 IP 终生不再复检，死 IP 会残留池中。
 - **隧道连接报 407？** 检查 `http://<项目名>:<项目token>@host:8101` 是否拼对，项目是否已在 proxy-hub 注册。
 - **生产用 host 网络还是 bridge？** 默认 bridge + 端口映射 8100:8100 / 8101:8101；只有在需要大量源端口时才考虑 host 网络。
 
